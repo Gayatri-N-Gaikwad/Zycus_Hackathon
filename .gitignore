@@ -1,0 +1,31 @@
+# Maven build artifacts
+target/
+**/target/
+*.jar
+*.war
+*.nar
+*.ear
+*.class
+
+# Logs
+*.log
+
+# IDE & Editor files
+.idea/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+.vscode/
+
+# Secrets and environment files
+.env
+.env.*
+*.key
+*.pem
+
+# OS generated files
+.DS_Store
+Thumbs.db
