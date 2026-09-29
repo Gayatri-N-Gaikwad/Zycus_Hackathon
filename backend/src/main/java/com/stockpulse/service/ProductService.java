@@ -1,15 +1,21 @@
 package com.stockpulse.service;
 
+import com.stockpulse.commerce.CommerceRecommendation;
+import com.stockpulse.commerce.CommerceRecommendationEvent;
+import com.stockpulse.commerce.CommerceStrategy;
 import com.stockpulse.domain.PricingSuggestion;
 import com.stockpulse.domain.Product;
 import com.stockpulse.domain.ReorderSuggestion;
 import com.stockpulse.domain.enums.Category;
 import com.stockpulse.domain.enums.ProductStatus;
 import com.stockpulse.domain.enums.SuggestionStatus;
+import com.stockpulse.domain.enums.TriggerReason;
 import com.stockpulse.repository.PricingSuggestionRepository;
 import com.stockpulse.repository.ProductRepository;
 import com.stockpulse.repository.ReorderSuggestionRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
@@ -22,13 +28,19 @@ public class ProductService {
     private final ProductRepository productRepository;
     private final PricingSuggestionRepository pricingSuggestionRepository;
     private final ReorderSuggestionRepository reorderSuggestionRepository;
+    private final CommerceStrategy commerceStrategy;
+    private final ApplicationEventPublisher eventPublisher;
 
     public ProductService(ProductRepository productRepository,
                           PricingSuggestionRepository pricingSuggestionRepository,
-                          ReorderSuggestionRepository reorderSuggestionRepository) {
+                          ReorderSuggestionRepository reorderSuggestionRepository,
+                          @Qualifier("RULE_BASED") CommerceStrategy commerceStrategy,
+                          ApplicationEventPublisher eventPublisher) {
         this.productRepository = productRepository;
         this.pricingSuggestionRepository = pricingSuggestionRepository;
         this.reorderSuggestionRepository = reorderSuggestionRepository;
+        this.commerceStrategy = commerceStrategy;
+        this.eventPublisher = eventPublisher;
     }
 
     @Transactional(readOnly = true)
@@ -54,7 +66,9 @@ public class ProductService {
     }
 
     public Product createProduct(Product product) {
-        return productRepository.save(product);
+        Product saved = productRepository.save(product);
+        publishRecommendationEventIfTriggered(saved);
+        return saved;
     }
 
     public Product updateProduct(String id, Product productDetails) {
@@ -95,7 +109,9 @@ public class ProductService {
             product.setSupplierId(productDetails.getSupplierId());
         }
 
-        return productRepository.save(product);
+        Product saved = productRepository.save(product);
+        publishRecommendationEventIfTriggered(saved);
+        return saved;
     }
 
     public Product updateStock(String id, Integer newStockLevel) {
@@ -110,7 +126,9 @@ public class ProductService {
         } else if (product.getStatus() == ProductStatus.OUT_OF_STOCK) {
             product.setStatus(ProductStatus.ACTIVE);
         }
-        return productRepository.save(product);
+        Product saved = productRepository.save(product);
+        publishRecommendationEventIfTriggered(saved);
+        return saved;
     }
 
     public Product processOrder(String id, Integer quantity) {
@@ -127,7 +145,9 @@ public class ProductService {
         if (remaining == 0) {
             product.setStatus(ProductStatus.OUT_OF_STOCK);
         }
-        return productRepository.save(product);
+        Product saved = productRepository.save(product);
+        publishRecommendationEventIfTriggered(saved);
+        return saved;
     }
 
     public void deleteProduct(String id) {
@@ -160,5 +180,113 @@ public class ProductService {
 
     public ReorderSuggestion createReorderSuggestion(ReorderSuggestion suggestion) {
         return reorderSuggestionRepository.save(suggestion);
+    }
+
+    public Optional<PricingSuggestion> suggestPricing(String productId) {
+        return productRepository.findById(productId)
+                .map(product -> {
+                    CommerceRecommendation recommendation = commerceStrategy.recommend(product, TriggerReason.MANUAL);
+                    var pricing = recommendation.getPricing();
+                    PricingSuggestion suggestion = new PricingSuggestion(
+                            product.getId(),
+                            product.getCurrentPrice(),
+                            pricing.getRecommendedPrice(),
+                            pricing.getDirection(),
+                            pricing.getConfidence(),
+                            pricing.getReasoning(),
+                            TriggerReason.MANUAL
+                    );
+                    suggestion.setStatus(SuggestionStatus.PENDING);
+                    return pricingSuggestionRepository.save(suggestion);
+                });
+    }
+
+    public Optional<ReorderSuggestion> suggestReorder(String productId) {
+        return productRepository.findById(productId)
+                .map(product -> {
+                    CommerceRecommendation recommendation = commerceStrategy.recommend(product, TriggerReason.MANUAL);
+                    var reorder = recommendation.getReorder();
+                    ReorderSuggestion suggestion = new ReorderSuggestion(
+                            product.getId(),
+                            product.getStockLevel(),
+                            reorder.getRecommendedQuantity(),
+                            reorder.getLeadTimeDays(),
+                            reorder.getConfidence(),
+                            reorder.getReasoning(),
+                            TriggerReason.MANUAL
+                    );
+                    suggestion.setStatus(SuggestionStatus.PENDING);
+                    return reorderSuggestionRepository.save(suggestion);
+                });
+    }
+
+    public PricingSuggestion acceptPricingSuggestion(String productId, String suggestionId) {
+        PricingSuggestion suggestion = pricingSuggestionRepository.findById(suggestionId)
+                .orElseThrow(() -> new IllegalArgumentException("Pricing suggestion not found: " + suggestionId));
+        ensurePendingSuggestion(suggestion.getProductId(), productId, suggestion.getStatus(), "pricing");
+
+        Product product = productRepository.findById(productId)
+                .orElseThrow(() -> new IllegalArgumentException("Product not found with id: " + productId));
+        product.setCurrentPrice(suggestion.getRecommendedPrice());
+        productRepository.save(product);
+        suggestion.setStatus(SuggestionStatus.ACCEPTED);
+        return pricingSuggestionRepository.save(suggestion);
+    }
+
+    public PricingSuggestion rejectPricingSuggestion(String productId, String suggestionId) {
+        PricingSuggestion suggestion = pricingSuggestionRepository.findById(suggestionId)
+                .orElseThrow(() -> new IllegalArgumentException("Pricing suggestion not found: " + suggestionId));
+        ensurePendingSuggestion(suggestion.getProductId(), productId, suggestion.getStatus(), "pricing");
+        suggestion.setStatus(SuggestionStatus.REJECTED);
+        return pricingSuggestionRepository.save(suggestion);
+    }
+
+    public ReorderSuggestion acceptReorderSuggestion(String productId, String suggestionId) {
+        ReorderSuggestion suggestion = reorderSuggestionRepository.findById(suggestionId)
+                .orElseThrow(() -> new IllegalArgumentException("Reorder suggestion not found: " + suggestionId));
+        ensurePendingSuggestion(suggestion.getProductId(), productId, suggestion.getStatus(), "reorder");
+
+        Product product = productRepository.findById(productId)
+                .orElseThrow(() -> new IllegalArgumentException("Product not found with id: " + productId));
+        product.setStockLevel(product.getStockLevel() + suggestion.getRecommendedQuantity());
+        if (product.getStockLevel() > 0 && product.getStatus() == ProductStatus.OUT_OF_STOCK) {
+            product.setStatus(ProductStatus.ACTIVE);
+        }
+        productRepository.save(product);
+        suggestion.setStatus(SuggestionStatus.ACCEPTED);
+        return reorderSuggestionRepository.save(suggestion);
+    }
+
+    public ReorderSuggestion rejectReorderSuggestion(String productId, String suggestionId) {
+        ReorderSuggestion suggestion = reorderSuggestionRepository.findById(suggestionId)
+                .orElseThrow(() -> new IllegalArgumentException("Reorder suggestion not found: " + suggestionId));
+        ensurePendingSuggestion(suggestion.getProductId(), productId, suggestion.getStatus(), "reorder");
+        suggestion.setStatus(SuggestionStatus.REJECTED);
+        return reorderSuggestionRepository.save(suggestion);
+    }
+
+    private void ensurePendingSuggestion(String suggestionProductId, String productId,
+                                         SuggestionStatus status, String suggestionType) {
+        if (!productId.equals(suggestionProductId)) {
+            throw new IllegalArgumentException("Suggestion does not belong to product: " + productId);
+        }
+        if (status != SuggestionStatus.PENDING) {
+            throw new IllegalStateException("Cannot change finalized " + suggestionType + " suggestion");
+        }
+    }
+
+    private void publishRecommendationEventIfTriggered(Product product) {
+        if (product.getStockLevel() < product.getReorderThreshold()) {
+            eventPublisher.publishEvent(new CommerceRecommendationEvent(product, TriggerReason.INVENTORY_LOW));
+            return;
+        }
+
+        double categoryAverage = productRepository.findByCategory(product.getCategory()).stream()
+                .mapToInt(Product::getDemandVelocity)
+                .average()
+                .orElse(0.0);
+        if (product.getDemandVelocity() > 3.0 * categoryAverage) {
+            eventPublisher.publishEvent(new CommerceRecommendationEvent(product, TriggerReason.DEMAND_SPIKE));
+        }
     }
 }

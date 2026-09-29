@@ -17,9 +17,11 @@ import java.math.BigDecimal;
 import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest
@@ -40,6 +42,15 @@ class ProductControllerTest {
                 .andExpect(jsonPath("$").isArray())
                 .andExpect(jsonPath("$.length()").value(org.hamcrest.Matchers.greaterThanOrEqualTo(8)));
     }
+
+        @Test
+        void testCorsAllowsFrontendOnPort5174() throws Exception {
+                mockMvc.perform(options("/api/products")
+                                                .header("Origin", "http://localhost:5174")
+                                                .header("Access-Control-Request-Method", "GET"))
+                                .andExpect(status().isOk())
+                                .andExpect(header().string("Access-Control-Allow-Origin", "http://localhost:5174"));
+        }
 
     @Test
     void testFilterProductsByStatusAndCategory() throws Exception {
@@ -119,5 +130,79 @@ class ProductControllerTest {
                 .andExpect(jsonPath("$").isArray())
                 .andExpect(jsonPath("$", hasSize(1)))
                 .andExpect(jsonPath("$[0].recommendedQuantity").value(50));
+    }
+
+    @Test
+    void testSuggestPricingPersistsPendingManualSuggestion() throws Exception {
+        mockMvc.perform(post("/api/products/prod-1/pricing-suggestions"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.productId").value("prod-1"))
+                .andExpect(jsonPath("$.recommendedPrice").value(219.99))
+                .andExpect(jsonPath("$.status").value("PENDING"))
+                .andExpect(jsonPath("$.triggerReason").value("MANUAL"));
+
+        mockMvc.perform(get("/api/products/prod-1/pricing-suggestions?status=PENDING"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].triggerReason").value("MANUAL"));
+    }
+
+    @Test
+    void testSuggestReorderPersistsPendingManualSuggestion() throws Exception {
+        mockMvc.perform(post("/api/products/prod-1/reorder-suggestions"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.productId").value("prod-1"))
+                .andExpect(jsonPath("$.recommendedQuantity").value(60))
+                .andExpect(jsonPath("$.status").value("PENDING"))
+                .andExpect(jsonPath("$.triggerReason").value("MANUAL"));
+
+        mockMvc.perform(get("/api/products/prod-1/reorder-suggestions?status=PENDING"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(2)));
+    }
+
+    @Test
+    void testAcceptPricingSuggestionUpdatesProductAndStatus() throws Exception {
+        mockMvc.perform(post("/api/products/prod-3/pricing-suggestions/psug-1/accept"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACCEPTED"));
+
+        mockMvc.perform(get("/api/products/prod-3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.currentPrice").value(89.99));
+    }
+
+    @Test
+    void testAcceptReorderSuggestionUpdatesStockAndStatus() throws Exception {
+        mockMvc.perform(post("/api/products/prod-1/reorder-suggestions/rsug-1/accept"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACCEPTED"));
+
+        mockMvc.perform(get("/api/products/prod-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stockLevel").value(65));
+    }
+
+    @Test
+    void testRejectPricingSuggestionLeavesProductUnchanged() throws Exception {
+        mockMvc.perform(post("/api/products/prod-6/pricing-suggestions/psug-2/reject"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REJECTED"));
+
+        mockMvc.perform(get("/api/products/prod-6"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.currentPrice").value(119.0));
+    }
+
+    @Test
+    void testFinalizedSuggestionCannotBeAcceptedOrRejectedAgain() throws Exception {
+        mockMvc.perform(post("/api/products/prod-6/pricing-suggestions/psug-2/reject"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/products/prod-6/pricing-suggestions/psug-2/accept"))
+                .andExpect(status().isConflict());
+
+        mockMvc.perform(post("/api/products/prod-6/pricing-suggestions/psug-2/reject"))
+                .andExpect(status().isConflict());
     }
 }

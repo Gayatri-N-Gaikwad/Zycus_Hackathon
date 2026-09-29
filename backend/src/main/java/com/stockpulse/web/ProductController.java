@@ -24,7 +24,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/products")
-@CrossOrigin(origins = "http://localhost:5173")
+@CrossOrigin(origins = {"http://localhost:5173", "http://localhost:5174"})
 public class ProductController {
 
     private final ProductService productService;
@@ -85,14 +85,34 @@ public class ProductController {
 
     @PostMapping("/{id}/pricing-suggestions")
     public ResponseEntity<PricingSuggestion> createPricingSuggestion(
-            @PathVariable String id,
-            @RequestBody PricingSuggestion suggestion) {
-        if (productService.getProductById(id).isEmpty()) {
+            @PathVariable String id) {
+        return productService.suggestPricing(id)
+                .map(suggestion -> ResponseEntity.status(HttpStatus.CREATED).body(suggestion))
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PostMapping("/{id}/pricing-suggestions/{suggestionId}/accept")
+    public ResponseEntity<PricingSuggestion> acceptPricingSuggestion(
+            @PathVariable String id, @PathVariable String suggestionId) {
+        try {
+            return ResponseEntity.ok(productService.acceptPricingSuggestion(id, suggestionId));
+        } catch (IllegalArgumentException e) {
             return ResponseEntity.notFound().build();
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).build();
         }
-        suggestion.setProductId(id);
-        PricingSuggestion created = productService.createPricingSuggestion(suggestion);
-        return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    }
+
+    @PostMapping("/{id}/pricing-suggestions/{suggestionId}/reject")
+    public ResponseEntity<PricingSuggestion> rejectPricingSuggestion(
+            @PathVariable String id, @PathVariable String suggestionId) {
+        try {
+            return ResponseEntity.ok(productService.rejectPricingSuggestion(id, suggestionId));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.notFound().build();
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).build();
+        }
     }
 
     @GetMapping("/{id}/reorder-suggestions")
@@ -107,13 +127,33 @@ public class ProductController {
 
     @PostMapping("/{id}/reorder-suggestions")
     public ResponseEntity<ReorderSuggestion> createReorderSuggestion(
-            @PathVariable String id,
-            @RequestBody ReorderSuggestion suggestion) {
-        if (productService.getProductById(id).isEmpty()) {
+            @PathVariable String id) {
+        return productService.suggestReorder(id)
+                .map(suggestion -> ResponseEntity.status(HttpStatus.CREATED).body(suggestion))
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PostMapping("/{id}/reorder-suggestions/{suggestionId}/accept")
+    public ResponseEntity<ReorderSuggestion> acceptReorderSuggestion(
+            @PathVariable String id, @PathVariable String suggestionId) {
+        try {
+            return ResponseEntity.ok(productService.acceptReorderSuggestion(id, suggestionId));
+        } catch (IllegalArgumentException e) {
             return ResponseEntity.notFound().build();
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).build();
         }
-        suggestion.setProductId(id);
-        ReorderSuggestion created = productService.createReorderSuggestion(suggestion);
-        return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    }
+
+    @PostMapping("/{id}/reorder-suggestions/{suggestionId}/reject")
+    public ResponseEntity<ReorderSuggestion> rejectReorderSuggestion(
+            @PathVariable String id, @PathVariable String suggestionId) {
+        try {
+            return ResponseEntity.ok(productService.rejectReorderSuggestion(id, suggestionId));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.notFound().build();
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).build();
+        }
     }
 }
